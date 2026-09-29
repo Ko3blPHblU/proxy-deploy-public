@@ -330,16 +330,7 @@ def probe(name, item, definition, directory):
                 time.sleep(1)
         else:
             raise RuntimeError('Проверочный клиент не запустился.')
-        # Independent destinations: a single website outage is not a service failure.
-        for url in ('https://www.microsoft.com/', 'https://example.com/'):
-            try:
-                run(['curl', '--fail', '--silent', '--show-error', '--noproxy', '',
-                    '--proxy', f'socks5h://127.0.0.1:{port}', '--connect-timeout', '10',
-                    '--max-time', '30', url, '--output', os.devnull], 40)
-                return
-            except RuntimeError:
-                continue
-        raise RuntimeError(f'{name}: запрос через клиент не прошёл к двум тестовым сайтам.')
+        base.https_probe(port, name)
     except BaseException:
         if cid:
             base.capture_container(cid, name + ' probe')

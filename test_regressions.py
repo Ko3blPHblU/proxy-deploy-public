@@ -15,6 +15,38 @@ from test_proxy_config import state
 
 
 class RegressionTests(unittest.TestCase):
+    def test_https_probe_falls_back_after_protocol_error_with_tls_and_proxy(self):
+        with patch.object(config.subprocess, 'run', side_effect=[
+                subprocess.CompletedProcess([], 16, b'', b'PROTOCOL_ERROR'),
+                subprocess.CompletedProcess([], 0, b'', b'')]) as curl:
+            config.https_probe(18082, 'hysteria')
+        self.assertEqual(curl.call_count, 2)
+        for call in curl.call_args_list:
+            args = call.args[0]
+            self.assertEqual(args[:3], ['curl', '--disable', '--http1.1'])
+            self.assertIn('socks5h://127.0.0.1:18082', args)
+            self.assertNotIn('--insecure', args)
+            self.assertNotIn('-k', args)
+        self.assertIn('https://example.com/', curl.call_args.args[0])
+
+    def test_https_probe_falls_back_after_timeout_and_stops_on_success(self):
+        with patch.object(config.subprocess, 'run', side_effect=[
+                subprocess.TimeoutExpired('curl', 40),
+                subprocess.CompletedProcess([], 0, b'', b'')]) as curl:
+            config.https_probe(18082, 'hysteria')
+        self.assertEqual(curl.call_count, 2)
+        with patch.object(config.subprocess, 'run', return_value=
+                subprocess.CompletedProcess([], 0, b'', b'')) as curl:
+            config.https_probe(18082, 'hysteria')
+        self.assertEqual(curl.call_count, 1)
+
+    def test_https_probe_never_accepts_two_failed_requests(self):
+        with patch.object(config.subprocess, 'run', return_value=
+                subprocess.CompletedProcess([], 60, b'', b'certificate error')) as curl:
+            with self.assertRaises(RuntimeError):
+                config.https_probe(18082, 'hysteria')
+        self.assertEqual(curl.call_count, 2)
+
     def setUp(self):
         config.SECRETS.clear()
         config.DIAGNOSTIC_PATH = None

@@ -588,6 +588,26 @@ def panel_api(s, cid, state_path):
     return api
 
 
+def https_probe(port, service):
+    # Test the tunnel, not the destination's HTTP/2 implementation. TLS stays verified.
+    for url in ('https://www.microsoft.com/', 'https://example.com/'):
+        try:
+            result = subprocess.run(['curl', '--disable', '--http1.1', '--fail', '--silent', '--show-error',
+                '--noproxy', '', '--proxy', f'socks5h://127.0.0.1:{port}',
+                '--connect-timeout', '10', '--max-time', '30', url, '--output', os.devnull],
+                capture_output=True, timeout=40)
+        except subprocess.TimeoutExpired as exc:
+            diagnostic(f'{service}: client curl timeout; site={url}', exc.stderr or '')
+        else:
+            diagnostic(f'{service}: client curl exit={result.returncode}; site={url}', result.stderr)
+            if result.returncode == 0:
+                return
+        print(f'[!] {service}: HTTPS-проверка {url} не прошла; подробности в журнале.', flush=True)
+    raise RuntimeError(f'{service}: HTTPS-запрос через клиент не прошёл к двум тестовым сайтам. '
+                       'Проверьте журнал клиента и исходящий доступ; одно подключение к серверу '
+                       'ещё не подтверждает передачу данных.')
+
+
 def client_probe(s, images, service, target):
     """Authenticate a real client through localhost:443, then fetch HTTPS through it."""
     target = Path(target)
@@ -631,15 +651,7 @@ def client_probe(s, images, service, target):
                 time.sleep(1)
         else:
             raise RuntimeError('Проверочный клиент не запустился за 30 секунд.')
-        result = subprocess.run(['curl', '--fail', '--silent', '--show-error',
-            '--noproxy', '', '--proxy', f'socks5h://127.0.0.1:{port}',
-            '--connect-timeout', '10', '--max-time', '30',
-            'https://www.microsoft.com/', '--output', os.devnull],
-            capture_output=True, timeout=40)
-        if result.returncode:
-            diagnostic(f'{service}: client curl exit={result.returncode}', result.stderr)
-            raise RuntimeError('HTTPS-запрос через проверочный клиент не выполнен. '
-                               'Проверьте настройки и исходящий доступ к www.microsoft.com.')
+        https_probe(port, service)
     except Exception as exc:
         diagnostic(f'{service}: client probe failed', type(exc).__name__)
         if cid:
