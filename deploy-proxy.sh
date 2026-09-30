@@ -22,6 +22,8 @@ CHECK_ONLY=0
 ADD_EXTRAS=''
 CLOUDFLARE=0
 EXPORT_CREDENTIALS=0
+SUBSCRIPTION=0
+ROTATE_SUBSCRIPTION=0
 LOCKED=0
 declare -a SELECTED=()
 declare -a DNS_FLAGS=()
@@ -34,6 +36,8 @@ usage() {
     cat <<'EOF'
 Использование: sudo bash deploy-proxy.sh [--check] [--add=naive,xhttp] [--cloudflare] [--upgrade-system] [--export-credentials]
   --export-credentials  Собрать все сохранённые данные подключения в credentials.txt без перезапуска сервисов.
+  --subscription    Включить/обновить HTTPS-подписку на существующей установке.
+  --subscription-rotate  Заменить секретные адреса подписки (пароли сервисов не меняются).
   --check           Только проверки существующей установки, без изменений.
   --upgrade-system  Дополнительно выполнить apt-get upgrade (откат пакетов не предусмотрен).
   --add=naive,xhttp  Добавить HTTPS-резервы, не перезапуская существующие сервисы.
@@ -48,10 +52,15 @@ for arg in "$@"; do
         --add=*) ADD_EXTRAS=${arg#--add=} ;;
         --cloudflare) CLOUDFLARE=1; DNS_FLAGS=(--cloudflare) ;;
         --export-credentials) EXPORT_CREDENTIALS=1 ;;
+        --subscription) SUBSCRIPTION=1 ;;
+        --subscription-rotate) SUBSCRIPTION=1; ROTATE_SUBSCRIPTION=1 ;;
         --help|-h) usage; exit 0 ;;
         *) usage; die "Неизвестный аргумент: $arg" ;;
     esac
 done
+if (( SUBSCRIPTION )) && { (( CHECK_ONLY || UPGRADE || CLOUDFLARE || EXPORT_CREDENTIALS )) || [[ -n "$ADD_EXTRAS" ]]; }; then
+    die '--subscription используется отдельно от остальных режимов.'
+fi
 if (( EXPORT_CREDENTIALS )) && { (( CHECK_ONLY || UPGRADE || CLOUDFLARE )) || [[ -n "$ADD_EXTRAS" ]]; }; then
     die '--export-credentials используется отдельно от остальных режимов.'
 fi
@@ -235,6 +244,15 @@ chmod 600 "$LOG"
 export PROXY_DEPLOY_LOG="$LOG"
 say "Журнал этого запуска: $LOG"
 TMP=$(mktemp -d /tmp/proxy-deploy.XXXXXXXX)
+if (( SUBSCRIPTION )); then
+    STEP='настройка подписки'
+    [[ -f "$HERE/proxy_subscription.py" ]] || die 'Обновите весь репозиторий: нужен proxy_subscription.py.'
+    [[ -f "$ROOT/state.json" ]] || die 'Сначала завершите установку сервисов.'
+    subscription_flags=()
+    if (( ROTATE_SUBSCRIPTION )); then subscription_flags+=(--rotate); fi
+    python3 "$HERE/proxy_subscription.py" "${subscription_flags[@]}"
+    exit 0
+fi
 if (( EXPORT_CREDENTIALS )); then
     [[ -f "$ROOT/state.json" && ! -L "$ROOT/state.json" ]] || die 'Нет сохранённого состояния установки.'
     [[ $(stat -c %u "$ROOT/state.json") == 0 && $(stat -c %a "$ROOT/state.json") == 600 ]] || die 'state.json должен принадлежать root с правами 600.'

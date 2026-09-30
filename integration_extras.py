@@ -15,6 +15,7 @@ from unittest.mock import patch
 import proxy_config as base
 import proxy_extras as extra
 import cloudflare_dns as dns
+import proxy_subscription as subscription
 from test_cloudflare_dns import FakeCloudflare
 from test_proxy_config import state
 
@@ -35,7 +36,7 @@ def main():
     run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '2',
          '-subj', '/CN=Extras CI CA', '-keyout', '/tmp/extras-ca.key', '-out', ca])
     domains = ['naive.example.com', 'xhttp.example.com']
-    for domain in [*domains, legacy['hy_domain']]:
+    for domain in [*domains, legacy['hy_domain'], legacy['fallback_domain']]:
         directory = Path('/etc/letsencrypt/live') / domain
         directory.mkdir(parents=True)
         run(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=' + domain,
@@ -46,9 +47,10 @@ def main():
              '-extfile', '/tmp/extra.ext', '-out', directory / 'fullchain.pem'])
     extra.HOOK.parent.mkdir(parents=True, exist_ok=True)
     extra.STREAM.write_text(base.nginx_stream(legacy))
+    subscription.HTTP.write_text(base.nginx_http(legacy, True))
     Path('/etc/nginx/nginx.conf').write_text('''include /etc/nginx/modules-enabled/*.conf;
 events {}
-http { server { listen 127.0.0.1:9443; return 200 "base service"; } }
+http { include /etc/nginx/conf.d/proxy-deploy-http.conf; }
 include /etc/nginx/proxy-deploy-stream.conf;
 ''')
     run(['nginx', '-t'])
@@ -149,7 +151,53 @@ include /etc/nginx/proxy-deploy-stream.conf;
         extra.check(committed)
         verify_legacy()
         assert len(dns_api.writes) == 2  # Failure/retry never duplicates DNS or deletes it.
-    print('PASS: real clients, incremental addition, failure rollback, repeat, certificate reload; running mtg/Hysteria preserved.')
+    # Real TLS subscription endpoint and systemd refresh; no changes to proxy containers.
+    import fcntl
+    import ssl
+    original_verify = subscription.verify
+    trusted_context = ssl.create_default_context(cafile=str(ca))
+    before_subscription = extra.core_snapshot()
+    with open('/run/lock/proxy-deploy.lock', 'w') as lock, \
+            patch.object(subscription, 'run', side_effect=test_run), \
+            patch.object(subscription, 'verify', side_effect=lambda s, settings, bodies:
+                         original_verify(s, settings, bodies, context=trusted_context)):
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        subscription.install()
+        settings_before = base.read_json(subscription.ROOT / 'state.json')
+        credentials_before = (root / 'credentials.txt').read_bytes()
+        subscription.install()
+        assert base.read_json(subscription.ROOT / 'state.json') == settings_before
+        assert (root / 'credentials.txt').read_bytes() == credentials_before
+        http_before = subscription.HTTP.read_bytes()
+        with patch.object(subscription, 'verify', side_effect=RuntimeError('injected HTTPS failure')):
+            try:
+                subscription.install()
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('Subscription error was swallowed')
+        assert subscription.HTTP.read_bytes() == http_before
+        assert (root / 'credentials.txt').read_bytes() == credentials_before
+        assert not (subscription.ROOT / 'pending.json').exists()
+        old_settings = settings_before
+        subscription.install(rotate=True)
+        settings_before = base.read_json(subscription.ROOT / 'state.json')
+        assert subscription.token_from(settings_before) != subscription.token_from(old_settings)
+        for client in ('v2rayn', 'v2rayng'):
+            assert not (subscription.PUBLIC / subscription.token_from(old_settings) / (client + '.txt')).exists()
+        try:
+            original_verify(legacy, old_settings, subscription.load_profiles()[2], context=trusted_context)
+        except RuntimeError:
+            pass  # Old URLs no longer return the subscription.
+        else:
+            raise AssertionError('Rotated URLs still work')
+        fcntl.flock(lock, fcntl.LOCK_UN)
+    run(['systemctl', 'start', subscription.UNIT.name])
+    _, _, bodies = subscription.load_profiles()
+    original_verify(legacy, settings_before, bodies, context=trusted_context)
+    assert extra.core_snapshot() == before_subscription
+    verify_legacy()
+    print('PASS: clients, rollback, repeat, certificate reload, HTTPS subscriptions and systemd refresh; mtg/Hysteria preserved.')
 
 
 if __name__ == '__main__':

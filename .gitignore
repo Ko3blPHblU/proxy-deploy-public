@@ -35,3 +35,5 @@ id_ed25519*
 .netrc
 .npmrc
 audit-reports/
+subscriptions/
+.credentials-*

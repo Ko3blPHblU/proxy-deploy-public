@@ -710,6 +710,11 @@ def credentials(s, output, extra=None):
                 'sni': item['domain'], 'alpn': 'h2', 'fp': 'chrome', 'type': 'xhttp',
                 'path': item['path'], 'mode': 'packet-up'})
             lines += [f'XHTTP: vless://{item["uuid"]}@{item["domain"]}:443?{query}#XHTTP', '']
+    subscription = ROOT / 'subscriptions' / 'state.json'
+    if subscription.exists():
+        from proxy_subscription import links
+        for client, url in links(s, read_json(subscription)).items():
+            lines += [f'Подписка {client}: {url}', '']
     path = Path(output)
     with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', newline='\n',
                                      dir=path.parent, prefix='.credentials-', delete=False) as f:
