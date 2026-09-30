@@ -238,7 +238,7 @@ def recover():
     journal.unlink()
 
 
-def verify(s, settings, bodies, context=None):
+def verify_once(s, settings, bodies, context=None):
     context = context or ssl.create_default_context()
     for client, url in links(s, settings).items():
         path = urllib.parse.urlsplit(url).path
@@ -248,7 +248,18 @@ def verify(s, settings, bodies, context=None):
                 response = http.client.HTTPResponse(tls)
                 response.begin()
                 if response.status != 200 or response.read(1048576) != bodies[client]:
-                    raise RuntimeError('HTTPS-проверка подписки не прошла; изменения будут отменены.')
+                    raise RuntimeError(f'HTTPS-проверка подписки не прошла (HTTP {response.status}); изменения будут отменены.')
+
+
+def verify(s, settings, bodies, context=None):
+    # Reload is asynchronous: old workers may briefly accept new connections.
+    for attempt in range(5):
+        try:
+            return verify_once(s, settings, bodies, context)
+        except (RuntimeError, OSError, http.client.HTTPException):
+            if attempt == 4:
+                raise
+            time.sleep(1)
 
 
 def install(rotate=False):

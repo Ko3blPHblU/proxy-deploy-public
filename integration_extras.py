@@ -48,7 +48,8 @@ def main():
     extra.HOOK.parent.mkdir(parents=True, exist_ok=True)
     extra.STREAM.write_text(base.nginx_stream(legacy))
     subscription.HTTP.write_text(base.nginx_http(legacy, True))
-    Path('/etc/nginx/nginx.conf').write_text('''include /etc/nginx/modules-enabled/*.conf;
+    Path('/etc/nginx/nginx.conf').write_text('''user www-data;
+include /etc/nginx/modules-enabled/*.conf;
 events {}
 http { include /etc/nginx/conf.d/proxy-deploy-http.conf; }
 include /etc/nginx/proxy-deploy-stream.conf;
